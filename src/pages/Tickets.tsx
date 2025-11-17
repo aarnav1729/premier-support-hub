@@ -1,152 +1,485 @@
-import { useEffect, useState } from "react";
-import { Layout } from "@/components/Layout";
+import React, { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
+import { useNavigate, Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useNavigate } from "react-router-dom";
-import { format } from "date-fns";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Layout } from "@/components/Layout";
+import { toast } from "sonner";
 
-type Ticket = {
+const API_BASE_URL = window.location.origin;
+
+type MepTicket = {
   ticket_number: string;
-  status: string;
   creation_datetime: string;
-  location?: string;
-  category?: string;
-  purpose_of_visit?: string;
-  type: "MEP" | "VR";
+  location: string;
+  category: string;
+  status: string;
+  empemail: string;
+  assignee_email?: string;
 };
 
-export default function Tickets() {
-  const { userEmail } = useAuth();
+type VrTicket = {
+  ticket_number: string;
+  creation_datetime: string;
+  number_of_people: number;
+  employee_or_guest: "employee" | "guest";
+  pickup_datetime: string;
+  drop_datetime: string;
+  status: string;
+  user_email: string;
+  assignee_email?: string;
+};
+
+export const Tickets: React.FC = () => {
+  const { userEmail, logout } = useAuth();
   const navigate = useNavigate();
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  const [loading, setLoading] = useState(false);
+  const [mepTickets, setMepTickets] = useState<MepTicket[]>([]);
+  const [vrTickets, setVrTickets] = useState<VrTicket[]>([]);
+  const [assignedMepTickets, setAssignedMepTickets] = useState<MepTicket[]>([]);
+  const [assignedVrTickets, setAssignedVrTickets] = useState<VrTicket[]>([]);
+
+  const fetchTickets = useCallback(async () => {
+    if (!userEmail) return;
+
+    setLoading(true);
+    try {
+      const [mepMineRes, vrMineRes, mepAssignedRes, vrAssignedRes] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/api/mep?scope=mine`, {
+            credentials: "include",
+          }),
+          fetch(`${API_BASE_URL}/api/vr?scope=mine`, {
+            credentials: "include",
+          }),
+          fetch(`${API_BASE_URL}/api/mep?scope=assigned`, {
+            credentials: "include",
+          }),
+          fetch(`${API_BASE_URL}/api/vr?scope=assigned`, {
+            credentials: "include",
+          }),
+        ]);
+
+      const responses = [mepMineRes, vrMineRes, mepAssignedRes, vrAssignedRes];
+
+      if (responses.some((r) => r.status === 401)) {
+        toast.error("Session expired, please log in again.");
+        await logout();
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      if (responses.some((r) => !r.ok)) {
+        toast.error("Failed to fetch tickets");
+        return;
+      }
+
+      const mepData = (await mepMineRes.json()) as MepTicket[];
+      const vrData = (await vrMineRes.json()) as VrTicket[];
+      const mepAssignedData = (await mepAssignedRes.json()) as MepTicket[];
+      const vrAssignedData = (await vrAssignedRes.json()) as VrTicket[];
+
+      setMepTickets(mepData || []);
+      setVrTickets(vrData || []);
+      setAssignedMepTickets(mepAssignedData || []);
+      setAssignedVrTickets(vrAssignedData || []);
+    } catch (err) {
+      console.error("Error fetching tickets:", err);
+      toast.error("Failed to fetch tickets");
+    } finally {
+      setLoading(false);
+    }
+  }, [userEmail, logout, navigate]);
 
   useEffect(() => {
+    if (!userEmail) {
+      navigate("/login", { replace: true });
+      return;
+    }
+
     fetchTickets();
-  }, [userEmail]);
+  }, [userEmail, navigate, fetchTickets]);
 
-  const fetchTickets = async () => {
+  const handleManagerApprove = async (ticketNumber: string) => {
+    if (!userEmail) {
+      toast.error("You must be logged in to approve requests");
+      navigate("/login", { replace: true });
+      return;
+    }
+
+    setLoading(true);
     try {
-      const [{ data: mepData }, { data: vrData }] = await Promise.all([
-        supabase.from("mep").select("*").eq("user_email", userEmail).order("creation_datetime", { ascending: false }),
-        supabase.from("vr").select("*").eq("user_email", userEmail).order("creation_datetime", { ascending: false }),
-      ]);
+      const res = await fetch(
+        `${API_BASE_URL}/api/vr/${encodeURIComponent(ticketNumber)}/status`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          credentials: "include",
+          body: JSON.stringify({ status: "pending" }),
+        }
+      );
 
-      const allTickets: Ticket[] = [
-        ...(mepData || []).map((t: any) => ({ ...t, type: "MEP" as const })),
-        ...(vrData || []).map((t: any) => ({ ...t, type: "VR" as const })),
-      ].sort((a, b) => new Date(b.creation_datetime).getTime() - new Date(a.creation_datetime).getTime());
+      if (res.status === 401) {
+        toast.error("Session expired, please log in again.");
+        await logout();
+        navigate("/login", { replace: true });
+        return;
+      }
 
-      setTickets(allTickets);
-    } catch (error) {
-      console.error("Error fetching tickets:", error);
+      if (!res.ok) {
+        let message = "Failed to approve request";
+        try {
+          const data = await res.json();
+          if (data && data.error) {
+            message = data.error;
+          }
+        } catch {
+          // ignore JSON parse errors
+        }
+        toast.error(message);
+        return;
+      }
+
+      toast.success("Vehicle request approved and sent to Transport.");
+      await fetchTickets();
+    } catch (err) {
+      console.error("Error approving vehicle request:", err);
+      toast.error("Failed to approve request");
     } finally {
       setLoading(false);
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    const variants: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-      pending: "outline",
-      in_progress: "default",
-      completed: "secondary",
-      rejected: "destructive",
-    };
-    return <Badge variant={variants[status] || "default"}>{status.replace("_", " ").toUpperCase()}</Badge>;
-  };
-
-  const filteredTickets = tickets.filter((ticket) => {
-    if (typeFilter !== "all" && ticket.type !== typeFilter) return false;
-    if (statusFilter !== "all" && ticket.status !== statusFilter) return false;
-    return true;
-  });
+  if (!userEmail) {
+    return null;
+  }
 
   return (
     <Layout>
-      <Card>
-        <CardHeader>
-          <CardTitle>My Tickets</CardTitle>
-          <div className="flex gap-4 mt-4">
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Filter by type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="MEP">MEP Requests</SelectItem>
-                <SelectItem value="VR">Vehicle Requests</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-                <SelectItem value="rejected">Rejected</SelectItem>
-              </SelectContent>
-            </Select>
+      <Card className="mb-4">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>My Tickets</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Logged in as <span className="font-mono">{userEmail}</span>
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" asChild>
+              <Link to="/create-vr">Create Vehicle Request</Link>
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                await logout();
+                navigate("/login", { replace: true });
+              }}
+            >
+              Logout
+            </Button>
           </div>
         </CardHeader>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Tickets</CardTitle>
+        </CardHeader>
         <CardContent>
-          {loading ? (
-            <p>Loading tickets...</p>
-          ) : filteredTickets.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8">No tickets found</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ticket #</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Details</TableHead>
-                  <TableHead>Action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredTickets.map((ticket) => (
-                  <TableRow key={ticket.ticket_number}>
-                    <TableCell className="font-medium">{ticket.ticket_number}</TableCell>
-                    <TableCell>
-                      <Badge variant={ticket.type === "MEP" ? "default" : "secondary"}>{ticket.type}</Badge>
-                    </TableCell>
-                    <TableCell>{getStatusBadge(ticket.status)}</TableCell>
-                    <TableCell>{format(new Date(ticket.creation_datetime), "MMM dd, yyyy")}</TableCell>
-                    <TableCell className="max-w-xs truncate">
-                      {ticket.type === "MEP" ? `${ticket.location} - ${ticket.category}` : ticket.purpose_of_visit}
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          navigate(
-                            ticket.type === "MEP" ? `/ticket-mep/${ticket.ticket_number}` : `/ticket-vr/${ticket.ticket_number}`
-                          )
-                        }
-                      >
-                        View
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+          <Tabs defaultValue="my" className="w-full">
+            <TabsList>
+              <TabsTrigger value="my">My Requests</TabsTrigger>
+              <TabsTrigger value="assigned">Assigned to Me</TabsTrigger>
+            </TabsList>
+
+            {/* MY REQUESTS */}
+            <TabsContent value="my" className="pt-4">
+              <Tabs defaultValue="mep">
+                <TabsList>
+                  <TabsTrigger value="mep">MEP Tickets</TabsTrigger>
+                  <TabsTrigger value="vr">Vehicle Requests</TabsTrigger>
+                </TabsList>
+
+                {/* MEP TAB - MY */}
+                <TabsContent value="mep" className="pt-4">
+                  {loading && (
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  )}
+                  {!loading && mepTickets.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No MEP tickets found.
+                    </p>
+                  )}
+                  {!loading && mepTickets.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Ticket #</TableHead>
+                          <TableHead>Created</TableHead>
+                          <TableHead>Location</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {mepTickets.map((t) => (
+                          <TableRow key={t.ticket_number}>
+                            <TableCell className="font-mono text-xs">
+                              {t.ticket_number}
+                            </TableCell>
+                            <TableCell>
+                              {new Date(t.creation_datetime).toLocaleString()}
+                            </TableCell>
+                            <TableCell>{t.location}</TableCell>
+                            <TableCell>{t.category}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{t.status}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  navigate(`/ticket-mep/${t.ticket_number}`)
+                                }
+                              >
+                                View
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </TabsContent>
+
+                {/* VR TAB - MY */}
+                <TabsContent value="vr" className="pt-4">
+                  {loading && (
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  )}
+                  {!loading && vrTickets.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No Vehicle Requests found.
+                    </p>
+                  )}
+                  {!loading && vrTickets.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Ticket #</TableHead>
+                          <TableHead>Created</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>People</TableHead>
+                          <TableHead>Pickup</TableHead>
+                          <TableHead>Drop</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {vrTickets.map((t) => (
+                          <TableRow key={t.ticket_number}>
+                            <TableCell className="font-mono text-xs">
+                              {t.ticket_number}
+                            </TableCell>
+                            <TableCell>
+                              {new Date(t.creation_datetime).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="capitalize">
+                              {t.employee_or_guest}
+                            </TableCell>
+                            <TableCell>{t.number_of_people}</TableCell>
+                            <TableCell>
+                              {new Date(t.pickup_datetime).toLocaleString()}
+                            </TableCell>
+                            <TableCell>
+                              {new Date(t.drop_datetime).toLocaleString()}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{t.status}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  navigate(`/ticket-vr/${t.ticket_number}`)
+                                }
+                              >
+                                View
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </TabsContent>
+
+            {/* ASSIGNED TO ME */}
+            <TabsContent value="assigned" className="pt-4">
+              <Tabs defaultValue="vr">
+                <TabsList>
+                  <TabsTrigger value="vr">Vehicle Requests</TabsTrigger>
+                  <TabsTrigger value="mep">MEP Tickets</TabsTrigger>
+                </TabsList>
+
+                {/* VR TAB - ASSIGNED */}
+                <TabsContent value="vr" className="pt-4">
+                  {loading && (
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  )}
+                  {!loading && assignedVrTickets.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No Vehicle Requests assigned to you.
+                    </p>
+                  )}
+                  {!loading && assignedVrTickets.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Ticket #</TableHead>
+                          <TableHead>Created</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>People</TableHead>
+                          <TableHead>Pickup</TableHead>
+                          <TableHead>Drop</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {assignedVrTickets.map((t) => {
+                          const canApprove = t.status === "pending_manager";
+
+                          return (
+                            <TableRow key={t.ticket_number}>
+                              <TableCell className="font-mono text-xs">
+                                {t.ticket_number}
+                              </TableCell>
+                              <TableCell>
+                                {new Date(t.creation_datetime).toLocaleString()}
+                              </TableCell>
+                              <TableCell className="capitalize">
+                                {t.employee_or_guest}
+                              </TableCell>
+                              <TableCell>{t.number_of_people}</TableCell>
+                              <TableCell>
+                                {new Date(t.pickup_datetime).toLocaleString()}
+                              </TableCell>
+                              <TableCell>
+                                {new Date(t.drop_datetime).toLocaleString()}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{t.status}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      navigate(`/ticket-vr/${t.ticket_number}`)
+                                    }
+                                  >
+                                    View
+                                  </Button>
+                                  {canApprove && (
+                                    <Button
+                                      size="sm"
+                                      onClick={() =>
+                                        handleManagerApprove(t.ticket_number)
+                                      }
+                                      disabled={loading}
+                                    >
+                                      Approve
+                                    </Button>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
+                </TabsContent>
+
+                {/* MEP TAB - ASSIGNED */}
+                <TabsContent value="mep" className="pt-4">
+                  {loading && (
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  )}
+                  {!loading && assignedMepTickets.length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No MEP tickets assigned to you.
+                    </p>
+                  )}
+                  {!loading && assignedMepTickets.length > 0 && (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Ticket #</TableHead>
+                          <TableHead>Created</TableHead>
+                          <TableHead>Location</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {assignedMepTickets.map((t) => (
+                          <TableRow key={t.ticket_number}>
+                            <TableCell className="font-mono text-xs">
+                              {t.ticket_number}
+                            </TableCell>
+                            <TableCell>
+                              {new Date(t.creation_datetime).toLocaleString()}
+                            </TableCell>
+                            <TableCell>{t.location}</TableCell>
+                            <TableCell>{t.category}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{t.status}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  navigate(`/ticket-mep/${t.ticket_number}`)
+                                }
+                              >
+                                View
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
     </Layout>
   );
-}
+};

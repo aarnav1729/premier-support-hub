@@ -1,14 +1,28 @@
 import { useEffect, useState } from "react";
 import { Layout } from "@/components/Layout";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useNavigate } from "react-router-dom";
 import { format } from "date-fns";
+
+const API_BASE_URL = window.location.origin;
 
 type Ticket = {
   ticket_number: string;
@@ -31,36 +45,82 @@ export default function AssignedTickets() {
 
   useEffect(() => {
     fetchTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userEmail]);
 
   const fetchTickets = async () => {
+    if (!userEmail) {
+      setTickets([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     try {
-      const [{ data: mepData }, { data: vrData }] = await Promise.all([
-        supabase.from("mep").select("*").eq("assignee_email", userEmail).order("creation_datetime", { ascending: false }),
-        supabase.from("vr").select("*").eq("assignee_email", userEmail).order("creation_datetime", { ascending: false }),
+      const [mepRes, vrRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/mep?scope=assigned`, {
+          credentials: "include",
+        }),
+        fetch(`${API_BASE_URL}/api/vr?scope=assigned`, {
+          credentials: "include",
+        }),
       ]);
 
+      if (!mepRes.ok || !vrRes.ok) {
+        console.error("Error fetching assigned tickets:", {
+          mepStatus: mepRes.status,
+          vrStatus: vrRes.status,
+        });
+        setTickets([]);
+        return;
+      }
+
+      const mepData = await mepRes.json();
+      const vrData = await vrRes.json();
+
       const allTickets: Ticket[] = [
-        ...(mepData || []).map((t: any) => ({ ...t, type: "MEP" as const })),
-        ...(vrData || []).map((t: any) => ({ ...t, type: "VR" as const })),
-      ].sort((a, b) => new Date(b.creation_datetime).getTime() - new Date(a.creation_datetime).getTime());
+        ...(Array.isArray(mepData) ? mepData : []).map((t: any) => ({
+          ...t,
+          type: "MEP" as const,
+          // Normalize requester email field: for MEP use empemail
+          user_email: t.user_email ?? t.empemail,
+        })),
+        ...(Array.isArray(vrData) ? vrData : []).map((t: any) => ({
+          ...t,
+          type: "VR" as const,
+          // VR already has user_email from backend
+          user_email: t.user_email,
+        })),
+      ].sort(
+        (a, b) =>
+          new Date(b.creation_datetime).getTime() -
+          new Date(a.creation_datetime).getTime()
+      );
 
       setTickets(allTickets);
     } catch (error) {
-      console.error("Error fetching tickets:", error);
+      console.error("Error fetching assigned tickets:", error);
+      setTickets([]);
     } finally {
       setLoading(false);
     }
   };
 
   const getStatusBadge = (status: string) => {
-    const variants: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+    const variants: Record<
+      string,
+      "default" | "secondary" | "destructive" | "outline"
+    > = {
       pending: "outline",
       in_progress: "default",
       completed: "secondary",
       rejected: "destructive",
     };
-    return <Badge variant={variants[status] || "default"}>{status.replace("_", " ").toUpperCase()}</Badge>;
+    return (
+      <Badge variant={variants[status] || "default"}>
+        {status.replace("_", " ").toUpperCase()}
+      </Badge>
+    );
   };
 
   const filteredTickets = tickets.filter((ticket) => {
@@ -103,7 +163,9 @@ export default function AssignedTickets() {
           {loading ? (
             <p>Loading tickets...</p>
           ) : filteredTickets.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8">No assigned tickets found</p>
+            <p className="text-center text-muted-foreground py-8">
+              No assigned tickets found
+            </p>
           ) : (
             <Table>
               <TableHeader>
@@ -120,15 +182,34 @@ export default function AssignedTickets() {
               <TableBody>
                 {filteredTickets.map((ticket) => (
                   <TableRow key={ticket.ticket_number}>
-                    <TableCell className="font-medium">{ticket.ticket_number}</TableCell>
+                    <TableCell className="font-medium">
+                      {ticket.ticket_number}
+                    </TableCell>
                     <TableCell>
-                      <Badge variant={ticket.type === "MEP" ? "default" : "secondary"}>{ticket.type}</Badge>
+                      <Badge
+                        variant={
+                          ticket.type === "MEP" ? "default" : "secondary"
+                        }
+                      >
+                        {ticket.type}
+                      </Badge>
                     </TableCell>
                     <TableCell>{getStatusBadge(ticket.status)}</TableCell>
                     <TableCell>{ticket.user_email}</TableCell>
-                    <TableCell>{format(new Date(ticket.creation_datetime), "MMM dd, yyyy")}</TableCell>
+                    <TableCell>
+                      {ticket.creation_datetime
+                        ? format(
+                            new Date(ticket.creation_datetime),
+                            "MMM dd, yyyy"
+                          )
+                        : "-"}
+                    </TableCell>
                     <TableCell className="max-w-xs truncate">
-                      {ticket.type === "MEP" ? `${ticket.location} - ${ticket.category}` : ticket.purpose_of_visit}
+                      {ticket.type === "MEP"
+                        ? `${ticket.location ?? ""}${
+                            ticket.location && ticket.category ? " - " : ""
+                          }${ticket.category ?? ""}`
+                        : ticket.purpose_of_visit}
                     </TableCell>
                     <TableCell>
                       <Button
@@ -136,7 +217,9 @@ export default function AssignedTickets() {
                         variant="outline"
                         onClick={() =>
                           navigate(
-                            ticket.type === "MEP" ? `/ticket-mep/${ticket.ticket_number}` : `/ticket-vr/${ticket.ticket_number}`
+                            ticket.type === "MEP"
+                              ? `/ticket-mep/${ticket.ticket_number}`
+                              : `/ticket-vr/${ticket.ticket_number}`
                           )
                         }
                       >

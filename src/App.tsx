@@ -5,15 +5,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
-import Login from "./pages/Login";
+import { Login } from "./pages/Login";
 import CreateMEP from "./pages/CreateMEP";
 import CreateVR from "./pages/CreateVR";
-import Tickets from "./pages/Tickets";
+import { Tickets } from "./pages/Tickets";
 import AssignedTickets from "./pages/AssignedTickets";
 import Analytics from "./pages/Analytics";
 import TicketMEP from "./pages/TicketMEP";
 import TicketVR from "./pages/TicketVR";
 import NotFound from "./pages/NotFound";
+import HOD from "./pages/HOD"; // <--- NEW
 
 const queryClient = new QueryClient();
 
@@ -64,6 +65,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Analytics />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/hod"
+              element={
+                <ProtectedRoute>
+                  <HOD />
                 </ProtectedRoute>
               }
             />

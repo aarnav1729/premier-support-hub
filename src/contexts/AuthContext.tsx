@@ -1,55 +1,127 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
-interface AuthContextType {
+const API_BASE_URL = window.location.origin;
+
+type AuthContextValue = {
   userEmail: string | null;
-  isAuthenticated: boolean;
-  login: (email: string) => void;
-  logout: () => void;
-}
+  initializing: boolean;
+  requestOtp: (email: string) => Promise<{ otp: string | null }>;
+  verifyOtp: (email: string, otp: string) => Promise<void>;
+  logout: () => Promise<void>;
+};
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const navigate = useNavigate();
+  const [initializing, setInitializing] = useState(true);
 
-  useEffect(() => {
-    const email = localStorage.getItem("userEmail");
-    if (email) {
-      setUserEmail(email);
-      setIsAuthenticated(true);
+  const fetchMe = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setUserEmail(null);
+        return;
+      }
+      const data = await res.json();
+      if (data && data.email) {
+        setUserEmail(data.email as string);
+      } else {
+        setUserEmail(null);
+      }
+    } catch {
+      setUserEmail(null);
     }
   }, []);
 
-  const login = (email: string) => {
-    localStorage.setItem("userEmail", email);
-    setUserEmail(email);
-    setIsAuthenticated(true);
-  };
+  useEffect(() => {
+    (async () => {
+      await fetchMe();
+      setInitializing(false);
+    })();
+  }, [fetchMe]);
 
-  const logout = () => {
-    localStorage.removeItem("userEmail");
-    setUserEmail(null);
-    setIsAuthenticated(false);
-    navigate("/login");
-    toast.success("Logged out successfully");
-  };
+  const requestOtp = useCallback(async (email: string) => {
+    const res = await fetch(`${API_BASE_URL}/api/auth/request-otp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email }),
+    });
 
-  return (
-    <AuthContext.Provider value={{ userEmail, isAuthenticated, login, logout }}>
-      {children}
-    </AuthContext.Provider>
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || "Failed to request OTP");
+    }
+
+    const data = await res.json();
+    // For MVP the server returns `otp` in the response.
+    // In production you would ignore this and send it via email.
+    return { otp: (data?.otp as string) || null };
+  }, []);
+
+  const verifyOtp = useCallback(
+    async (email: string, otp: string) => {
+      const res = await fetch(`${API_BASE_URL}/api/auth/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email, otp }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Failed to verify OTP");
+      }
+
+      const data = await res.json();
+      if (data && data.email) {
+        setUserEmail(data.email as string);
+      } else {
+        // fallback: re-fetch from /me
+        await fetchMe();
+      }
+    },
+    [fetchMe]
   );
+
+  const logout = useCallback(async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // ignore
+    }
+    setUserEmail(null);
+  }, []);
+
+  const value: AuthContextValue = {
+    userEmail,
+    initializing,
+    requestOtp,
+    verifyOtp,
+    logout,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
+export const useAuth = (): AuthContextValue => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
     throw new Error("useAuth must be used within an AuthProvider");
   }
-  return context;
+  return ctx;
 };

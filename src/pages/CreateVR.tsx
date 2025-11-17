@@ -1,15 +1,39 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+
+const API_BASE_URL = window.location.origin;
+
+// Attachments will be stored as JSON in MSSQL (NVARCHAR(MAX))
+type AttachmentPayload = {
+  name: string;
+  size: number;
+  type: string;
+  dataUrl: string; // base64 data URL
+};
+
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const MAX_FILES = 5;
 
 export default function CreateVR() {
   const { userEmail } = useAuth();
@@ -25,64 +49,143 @@ export default function CreateVR() {
     purposeOfVisit: "",
     description: "",
   });
+  const [attachments, setAttachments] = useState<AttachmentPayload[]>([]);
+
+  React.useEffect(() => {
+    if (!userEmail) {
+      navigate("/login", { replace: true });
+    }
+  }, [userEmail, navigate]);
 
   const handleNumberOfPeopleChange = (value: string) => {
-    const num = parseInt(value);
-    setFormData({
-      ...formData,
-      numberOfPeople: num,
-      names: Array(num).fill(""),
-    });
+    const num = parseInt(value, 10);
+    const safeNum = Number.isNaN(num) || num < 1 ? 1 : Math.min(num, 50);
+    setFormData((prev) => ({
+      ...prev,
+      numberOfPeople: safeNum,
+      names: Array(safeNum).fill(""),
+    }));
   };
 
   const handleNameChange = (index: number, value: string) => {
     const newNames = [...formData.names];
     newNames[index] = value;
-    setFormData({ ...formData, names: newNames });
+    setFormData((prev) => ({ ...prev, names: newNames }));
+  };
+
+  const handleAttachmentsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) {
+      setAttachments([]);
+      return;
+    }
+
+    const fileArray = Array.from(files).slice(0, MAX_FILES);
+    const oversized = fileArray.find((f) => f.size > MAX_FILE_SIZE_BYTES);
+    if (oversized) {
+      toast.error(
+        `File "${oversized.name}" is larger than 10 MB. Please choose smaller files.`
+      );
+      e.target.value = "";
+      return;
+    }
+
+    Promise.all<AttachmentPayload>(
+      fileArray.map(
+        (file) =>
+          new Promise<AttachmentPayload>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result;
+              resolve({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+                dataUrl: typeof result === "string" ? result : "",
+              });
+            };
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          })
+      )
+    )
+      .then((payloads) => {
+        setAttachments(payloads);
+      })
+      .catch((err) => {
+        console.error("Error reading attachments:", err);
+        toast.error("Failed to process attachments");
+        setAttachments([]);
+      });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!userEmail) {
+      toast.error("You must be logged in to create a request");
+      navigate("/login", { replace: true });
+      return;
+    }
 
     if (formData.names.some((name) => !name.trim())) {
       toast.error("Please enter all names");
       return;
     }
 
-    if (!formData.pickupDateTime || !formData.dropDateTime || !formData.contactNumber || !formData.purposeOfVisit) {
+    if (
+      !formData.pickupDateTime ||
+      !formData.dropDateTime ||
+      !formData.contactNumber ||
+      !formData.purposeOfVisit
+    ) {
       toast.error("Please fill all required fields");
+      return;
+    }
+
+    const pickup = new Date(formData.pickupDateTime);
+    const drop = new Date(formData.dropDateTime);
+    if (pickup >= drop) {
+      toast.error("Drop time must be after pickup time");
       return;
     }
 
     setLoading(true);
     try {
-      const { data: empData } = await supabase
-        .from("emp")
-        .select("empid")
-        .eq("empemail", userEmail)
-        .single();
-
-      if (!empData) {
-        toast.error("Employee record not found");
-        return;
-      }
-
-      const { error } = await supabase.from("vr").insert({
-        empid: empData.empid,
+      const payload = {
         number_of_people: formData.numberOfPeople,
         employee_or_guest: formData.employeeOrGuest,
         names: formData.names,
-        pickup_datetime: new Date(formData.pickupDateTime).toISOString(),
-        drop_datetime: new Date(formData.dropDateTime).toISOString(),
+        pickup_datetime: pickup.toISOString(),
+        drop_datetime: drop.toISOString(),
         contact_number: formData.contactNumber,
         purpose_of_visit: formData.purposeOfVisit,
         description: formData.description,
-        user_email: userEmail,
-        assignee_email: "krishnaiah.donta@premierenergies.com",
-        status: "pending",
+        attachments: attachments.length > 0 ? attachments : undefined,
+      };
+
+      const res = await fetch(`${API_BASE_URL}/api/vr`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(payload),
       });
 
-      if (error) throw error;
+      if (!res.ok) {
+        let message = "Failed to create request";
+        try {
+          const data = await res.json();
+          if (data && data.error) {
+            message = data.error;
+          }
+        } catch {
+          // ignore JSON parse errors
+        }
+        toast.error(message);
+        return;
+      }
 
       toast.success("Vehicle Request created successfully!");
       navigate("/tickets");
@@ -94,12 +197,18 @@ export default function CreateVR() {
     }
   };
 
+  if (!userEmail) {
+    return null;
+  }
+
   return (
     <Layout>
       <Card>
         <CardHeader>
           <CardTitle>Create Vehicle Request</CardTitle>
-          <CardDescription>Request a vehicle for transportation</CardDescription>
+          <CardDescription>
+            Request a vehicle for transportation
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -110,7 +219,7 @@ export default function CreateVR() {
                   id="numberOfPeople"
                   type="number"
                   min={1}
-                  max={20}
+                  max={50}
                   value={formData.numberOfPeople}
                   onChange={(e) => handleNumberOfPeopleChange(e.target.value)}
                 />
@@ -120,10 +229,15 @@ export default function CreateVR() {
                 <Label htmlFor="employeeOrGuest">Type *</Label>
                 <Select
                   value={formData.employeeOrGuest}
-                  onValueChange={(value: "employee" | "guest") => setFormData({ ...formData, employeeOrGuest: value })}
+                  onValueChange={(value: "employee" | "guest") =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      employeeOrGuest: value,
+                    }))
+                  }
                 >
-                  <SelectTrigger>
-                    <SelectValue />
+                  <SelectTrigger id="employeeOrGuest">
+                    <SelectValue placeholder="Select type" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="employee">Employee</SelectItem>
@@ -149,22 +263,32 @@ export default function CreateVR() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="pickupDateTime">Pickup Date & Time *</Label>
+                <Label htmlFor="pickupDateTime">Pickup Date &amp; Time *</Label>
                 <Input
                   id="pickupDateTime"
                   type="datetime-local"
                   value={formData.pickupDateTime}
-                  onChange={(e) => setFormData({ ...formData, pickupDateTime: e.target.value })}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      pickupDateTime: e.target.value,
+                    }))
+                  }
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="dropDateTime">Drop Date & Time *</Label>
+                <Label htmlFor="dropDateTime">Drop Date &amp; Time *</Label>
                 <Input
                   id="dropDateTime"
                   type="datetime-local"
                   value={formData.dropDateTime}
-                  onChange={(e) => setFormData({ ...formData, dropDateTime: e.target.value })}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      dropDateTime: e.target.value,
+                    }))
+                  }
                 />
               </div>
             </div>
@@ -175,7 +299,12 @@ export default function CreateVR() {
                 id="contactNumber"
                 type="tel"
                 value={formData.contactNumber}
-                onChange={(e) => setFormData({ ...formData, contactNumber: e.target.value })}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    contactNumber: e.target.value,
+                  }))
+                }
                 placeholder="+91 XXXXXXXXXX"
               />
             </div>
@@ -185,7 +314,12 @@ export default function CreateVR() {
               <Textarea
                 id="purposeOfVisit"
                 value={formData.purposeOfVisit}
-                onChange={(e) => setFormData({ ...formData, purposeOfVisit: e.target.value })}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    purposeOfVisit: e.target.value,
+                  }))
+                }
                 placeholder="Describe the purpose of this vehicle request..."
                 rows={3}
               />
@@ -196,17 +330,49 @@ export default function CreateVR() {
               <Textarea
                 id="description"
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    description: e.target.value,
+                  }))
+                }
                 placeholder="Any additional information..."
                 rows={3}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="attachments">Attachments (optional)</Label>
+              <Input
+                id="attachments"
+                type="file"
+                multiple
+                onChange={handleAttachmentsChange}
+              />
+              <p className="text-xs text-muted-foreground">
+                You can upload up to {MAX_FILES} files, max 10 MB each (images,
+                PDFs, etc.). Files are stored securely with the request.
+              </p>
+              {attachments.length > 0 && (
+                <ul className="mt-1 text-xs text-muted-foreground list-disc list-inside">
+                  {attachments.map((att) => (
+                    <li key={att.name}>
+                      {att.name} ({Math.round(att.size / 1024)} KB)
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <div className="flex gap-4">
               <Button type="submit" disabled={loading} className="flex-1">
                 {loading ? "Creating..." : "Create Request"}
               </Button>
-              <Button type="button" variant="outline" onClick={() => navigate("/tickets")}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => navigate("/tickets")}
+              >
                 Cancel
               </Button>
             </div>

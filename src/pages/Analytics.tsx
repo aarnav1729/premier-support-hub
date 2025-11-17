@@ -1,8 +1,27 @@
 import { useEffect, useState } from "react";
 import { Layout } from "@/components/Layout";
-import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import {
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
+
+const API_BASE_URL = window.location.origin;
 
 export default function Analytics() {
   const [loading, setLoading] = useState(true);
@@ -19,49 +38,71 @@ export default function Analytics() {
 
   const fetchAnalytics = async () => {
     try {
-      const [{ data: mepData }, { data: vrData }] = await Promise.all([
-        supabase.from("mep").select("*"),
-        supabase.from("vr").select("*"),
+      const [mepRes, vrRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/mep`, { credentials: "include" }),
+        fetch(`${API_BASE_URL}/api/vr`, { credentials: "include" }),
       ]);
 
-      // MEP vs VR
+      if (!mepRes.ok || !vrRes.ok) {
+        console.error("Error fetching analytics:", {
+          mepStatus: mepRes.status,
+          vrStatus: vrRes.status,
+        });
+        return;
+      }
+
+      const mepData = await mepRes.json();
+      const vrData = await vrRes.json();
+
+      // --- MEP vs VR ---
       const mepVsVr = [
-        { name: "MEP Requests", value: mepData?.length || 0 },
-        { name: "Vehicle Requests", value: vrData?.length || 0 },
+        { name: "MEP Requests", value: mepData.length || 0 },
+        { name: "Vehicle Requests", value: vrData.length || 0 },
       ];
 
-      // Status breakdown
-      const allTickets = [...(mepData || []), ...(vrData || [])];
-      const statusCounts = allTickets.reduce((acc: any, ticket: any) => {
-        acc[ticket.status] = (acc[ticket.status] || 0) + 1;
+      // --- Status Breakdown (MEP + VR) ---
+      const allTickets = [...mepData, ...vrData];
+      const statusCounts = allTickets.reduce((acc: any, t: any) => {
+        acc[t.status] = (acc[t.status] || 0) + 1;
         return acc;
       }, {});
-      const statusBreakdown = Object.entries(statusCounts).map(([name, value]) => ({
-        name: name.replace("_", " ").toUpperCase(),
-        value: value as number,
-      }));
+      const statusBreakdown = Object.entries(statusCounts).map(
+        ([name, value]) => ({
+          name: name.replace("_", " ").toUpperCase(),
+          value: value as number,
+        })
+      );
 
-      // MEP by location
-      const locationCounts = (mepData || []).reduce((acc: any, ticket: any) => {
-        acc[ticket.location] = (acc[ticket.location] || 0) + 1;
+      // --- MEP by Location ---
+      const locationCounts = mepData.reduce((acc: any, t: any) => {
+        acc[t.location] = (acc[t.location] || 0) + 1;
         return acc;
       }, {});
-      const mepByLocation = Object.entries(locationCounts).map(([name, value]) => ({
-        name,
-        value: value as number,
-      }));
+      const mepByLocation = Object.entries(locationCounts).map(
+        ([name, value]) => ({
+          name,
+          value: value as number,
+        })
+      );
 
-      // MEP by category
-      const categoryCounts = (mepData || []).reduce((acc: any, ticket: any) => {
-        acc[ticket.category] = (acc[ticket.category] || 0) + 1;
+      // --- MEP by Category ---
+      const categoryCounts = mepData.reduce((acc: any, t: any) => {
+        acc[t.category] = (acc[t.category] || 0) + 1;
         return acc;
       }, {});
-      const mepByCategory = Object.entries(categoryCounts).map(([name, value]) => ({
-        name,
-        value: value as number,
-      }));
+      const mepByCategory = Object.entries(categoryCounts).map(
+        ([name, value]) => ({
+          name,
+          value: value as number,
+        })
+      );
 
-      setStats({ mepVsVr, statusBreakdown, mepByLocation, mepByCategory });
+      setStats({
+        mepVsVr,
+        statusBreakdown,
+        mepByLocation,
+        mepByCategory,
+      });
     } catch (error) {
       console.error("Error fetching analytics:", error);
     } finally {
@@ -69,7 +110,13 @@ export default function Analytics() {
     }
   };
 
-  const COLORS = ["hsl(var(--chart-1))", "hsl(var(--chart-2))", "hsl(var(--chart-3))", "hsl(var(--chart-4))", "hsl(var(--chart-5))"];
+  const COLORS = [
+    "hsl(var(--chart-1))",
+    "hsl(var(--chart-2))",
+    "hsl(var(--chart-3))",
+    "hsl(var(--chart-4))",
+    "hsl(var(--chart-5))",
+  ];
 
   return (
     <Layout>
@@ -77,7 +124,9 @@ export default function Analytics() {
         <Card>
           <CardHeader>
             <CardTitle>Ticketing Analytics</CardTitle>
-            <CardDescription>Overview of all tickets and their status</CardDescription>
+            <CardDescription>
+              Overview of all tickets and their status
+            </CardDescription>
           </CardHeader>
         </Card>
 
@@ -90,6 +139,7 @@ export default function Analytics() {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* MEP vs VR */}
               <Card>
                 <CardHeader>
                   <CardTitle>MEP vs Vehicle Requests</CardTitle>
@@ -97,9 +147,20 @@ export default function Analytics() {
                 <CardContent>
                   <ResponsiveContainer width="100%" height={300}>
                     <PieChart>
-                      <Pie data={stats.mepVsVr} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+                      <Pie
+                        data={stats.mepVsVr}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={80}
+                        label
+                      >
                         {stats.mepVsVr.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          <Cell
+                            key={`cell-${index}`}
+                            fill={COLORS[index % COLORS.length]}
+                          />
                         ))}
                       </Pie>
                       <Tooltip />
@@ -109,6 +170,7 @@ export default function Analytics() {
                 </CardContent>
               </Card>
 
+              {/* Status Breakdown */}
               <Card>
                 <CardHeader>
                   <CardTitle>Status Breakdown</CardTitle>
@@ -126,6 +188,7 @@ export default function Analytics() {
                 </CardContent>
               </Card>
 
+              {/* MEP by Location */}
               <Card>
                 <CardHeader>
                   <CardTitle>MEP Requests by Location</CardTitle>
@@ -134,7 +197,12 @@ export default function Analytics() {
                   <ResponsiveContainer width="100%" height={300}>
                     <BarChart data={stats.mepByLocation}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
+                      <XAxis
+                        dataKey="name"
+                        angle={-45}
+                        textAnchor="end"
+                        height={100}
+                      />
                       <YAxis />
                       <Tooltip />
                       <Bar dataKey="value" fill="hsl(var(--accent))" />
@@ -143,6 +211,7 @@ export default function Analytics() {
                 </CardContent>
               </Card>
 
+              {/* MEP by Category */}
               <Card>
                 <CardHeader>
                   <CardTitle>MEP Requests by Category</CardTitle>
@@ -150,9 +219,20 @@ export default function Analytics() {
                 <CardContent>
                   <ResponsiveContainer width="100%" height={300}>
                     <PieChart>
-                      <Pie data={stats.mepByCategory} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+                      <Pie
+                        data={stats.mepByCategory}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={80}
+                        label
+                      >
                         {stats.mepByCategory.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          <Cell
+                            key={`cell-${index}`}
+                            fill={COLORS[index % COLORS.length]}
+                          />
                         ))}
                       </Pie>
                       <Tooltip />

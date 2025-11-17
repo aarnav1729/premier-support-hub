@@ -1,159 +1,130 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Ticket } from "lucide-react";
 
-export default function Login() {
+export const Login: React.FC = () => {
+  const navigate = useNavigate();
+  const { requestOtp, verifyOtp, userEmail } = useAuth();
+
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState("");
-  const [showOtp, setShowOtp] = useState(false);
+  const [otpRequested, setOtpRequested] = useState(false);
+  const [serverOtp, setServerOtp] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
-  const { login } = useAuth();
 
-  const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-  };
-
-  const handleSendOTP = async () => {
-    if (!email.endsWith("@premierenergies.com")) {
-      toast.error("Please use a valid @premierenergies.com email address");
-      return;
+  React.useEffect(() => {
+    if (userEmail) {
+      navigate("/tickets", { replace: true });
     }
+  }, [userEmail, navigate]);
 
+  const handleRequestOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoading(true);
     try {
-      const newOtp = generateOTP();
-      setGeneratedOtp(newOtp);
-
-      const expiresAt = new Date();
-      expiresAt.setMinutes(expiresAt.getMinutes() + 10);
-
-      await supabase.from("otp_codes").insert({
-        email,
-        otp: newOtp,
-        expires_at: expiresAt.toISOString(),
-      });
-
-      setShowOtp(true);
-      toast.success(`OTP Generated: ${newOtp}`, {
-        description: "Use this code to login",
-        duration: 10000,
-      });
-    } catch (error) {
-      toast.error("Failed to generate OTP");
+      const { otp: receivedOtp } = await requestOtp(email.trim().toLowerCase());
+      setOtpRequested(true);
+      setServerOtp(receivedOtp);
+      toast.success("OTP generated. (Shown on screen for testing)");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to request OTP");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyOTP = async () => {
-    if (otp !== generatedOtp) {
-      toast.error("Invalid OTP");
-      return;
-    }
-
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoading(true);
     try {
-      // Check if employee exists
-      const { data: empData, error: empError } = await supabase
-        .from("emp")
-        .select("*")
-        .eq("empemail", email)
-        .single();
-
-      if (empError || !empData) {
-        // Create new employee record
-        await supabase.from("emp").insert({
-          empemail: email,
-          activeflag: true,
-        });
-      }
-
-      // Mark OTP as used
-      await supabase
-        .from("otp_codes")
-        .update({ used: true })
-        .eq("email", email)
-        .eq("otp", otp);
-
-      login(email);
-      toast.success("Login successful!");
-      navigate("/tickets");
-    } catch (error) {
-      toast.error("Login failed");
+      await verifyOtp(email.trim().toLowerCase(), otp.trim());
+      toast.success("Login successful");
+      navigate("/tickets", { replace: true });
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to verify OTP");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-accent/10 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-muted/30">
       <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1 text-center">
-          <div className="flex justify-center mb-4">
-            <div className="p-3 bg-primary rounded-full">
-              <Ticket className="h-8 w-8 text-primary-foreground" />
-            </div>
-          </div>
-          <CardTitle className="text-2xl font-bold">Premier Energies</CardTitle>
-          <CardDescription>Ticketing System Login</CardDescription>
+        <CardHeader>
+          <CardTitle className="text-xl font-semibold text-center">
+            SPOT – Login
+          </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="email">Email Address</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="yourname@premierenergies.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={showOtp}
-            />
-          </div>
-
-          {!showOtp ? (
-            <Button onClick={handleSendOTP} disabled={loading} className="w-full">
-              {loading ? "Generating OTP..." : "Generate OTP"}
-            </Button>
+        <CardContent>
+          {!otpRequested ? (
+            <form onSubmit={handleRequestOtp} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Premier Energies Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@premierenergies.com"
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Requesting OTP..." : "Request OTP"}
+              </Button>
+              {serverOtp && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Dev only: OTP is{" "}
+                  <span className="font-mono">{serverOtp}</span>
+                </p>
+              )}
+            </form>
           ) : (
-            <>
+            <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="otp">Enter OTP</Label>
                 <Input
                   id="otp"
                   type="text"
-                  placeholder="Enter 6-digit OTP"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  required
                   value={otp}
                   onChange={(e) => setOtp(e.target.value)}
-                  maxLength={6}
+                  placeholder="Enter 6-digit OTP"
                 />
               </div>
-              <Button onClick={handleVerifyOTP} disabled={loading} className="w-full">
-                {loading ? "Verifying..." : "Verify OTP"}
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Verifying..." : "Verify & Login"}
               </Button>
               <Button
-                variant="outline"
-                onClick={() => {
-                  setShowOtp(false);
-                  setOtp("");
-                  setGeneratedOtp("");
-                }}
+                type="button"
+                variant="ghost"
                 className="w-full"
+                onClick={() => {
+                  setOtp("");
+                  setOtpRequested(false);
+                  setServerOtp(null);
+                }}
               >
-                Use Different Email
+                Change email
               </Button>
-            </>
+              {serverOtp && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Dev only: OTP is{" "}
+                  <span className="font-mono">{serverOtp}</span>
+                </p>
+              )}
+            </form>
           )}
         </CardContent>
       </Card>
     </div>
   );
-}
+};

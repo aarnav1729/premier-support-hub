@@ -1,15 +1,28 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+
+const API_BASE_URL = window.location.origin;
 
 const LOCATIONS = [
   "PEPPL",
@@ -21,6 +34,7 @@ const LOCATIONS = [
   "Axonify-WH",
   "Radiant-WH",
   "Bahadurguda-WH",
+  // NOTE: spelling aligned with backend (getMEPAssigneeEmail) which uses "Kothu-WH"
   "Kothu-WH",
 ];
 
@@ -35,6 +49,17 @@ const CATEGORIES = [
   "Others",
 ];
 
+// Attachments will be stored as JSON in MSSQL (NVARCHAR(MAX))
+type AttachmentPayload = {
+  name: string;
+  size: number;
+  type: string;
+  dataUrl: string; // base64 data URL
+};
+
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const MAX_FILES = 5;
+
 export default function CreateMEP() {
   const { userEmail } = useAuth();
   const navigate = useNavigate();
@@ -46,50 +71,112 @@ export default function CreateMEP() {
     areaOfWork: "",
     description: "",
   });
+  const [attachments, setAttachments] = useState<AttachmentPayload[]>([]);
 
-  const getAssigneeEmail = (location: string) => {
-    const pepplLocations = ["PEPPL", "PEIPL-C", "Bhagwati-WH", "Axonify-WH", "Bahadurguda-WH", "Kothur-WH"];
-    return pepplLocations.includes(location)
-      ? "mep.peppl@premierenergies.com"
-      : "mep.peipl@premierenergies.com";
+  const handleAttachmentsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) {
+      setAttachments([]);
+      return;
+    }
+
+    const fileArray = Array.from(files).slice(0, MAX_FILES);
+    const oversized = fileArray.find((f) => f.size > MAX_FILE_SIZE_BYTES);
+    if (oversized) {
+      toast.error(
+        `File "${oversized.name}" is larger than 10 MB. Please choose smaller files.`
+      );
+      e.target.value = "";
+      return;
+    }
+
+    Promise.all<AttachmentPayload>(
+      fileArray.map(
+        (file) =>
+          new Promise<AttachmentPayload>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result;
+              resolve({
+                name: file.name,
+                size: file.size,
+                type: file.type,
+                dataUrl: typeof result === "string" ? result : "",
+              });
+            };
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          })
+      )
+    )
+      .then((payloads) => {
+        setAttachments(payloads);
+      })
+      .catch((err) => {
+        console.error("Error reading attachments:", err);
+        toast.error("Failed to process attachments");
+        setAttachments([]);
+      });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!formData.location || !formData.category || !formData.areaOfWork || !formData.description) {
+
+    if (
+      !formData.location ||
+      !formData.category ||
+      !formData.areaOfWork ||
+      !formData.description
+    ) {
       toast.error("Please fill all required fields");
       return;
     }
 
+    if (formData.category === "Others" && !formData.customCategory.trim()) {
+      toast.error("Please specify the category for 'Others'");
+      return;
+    }
+
+    if (!userEmail) {
+      toast.error("You must be logged in to create a request");
+      return;
+    }
+
+    const category =
+      formData.category === "Others"
+        ? formData.customCategory.trim()
+        : formData.category;
+
     setLoading(true);
     try {
-      const { data: empData } = await supabase
-        .from("emp")
-        .select("empid")
-        .eq("empemail", userEmail)
-        .single();
-
-      if (!empData) {
-        toast.error("Employee record not found");
-        return;
-      }
-
-      const assigneeEmail = getAssigneeEmail(formData.location);
-      const category = formData.category === "Others" ? formData.customCategory : formData.category;
-
-      const { error } = await supabase.from("mep").insert({
-        empid: empData.empid,
-        location: formData.location,
-        category,
-        area_of_work: formData.areaOfWork,
-        description: formData.description,
-        assignee_email: assigneeEmail,
-        user_email: userEmail,
-        status: "pending",
+      const res = await fetch(`${API_BASE_URL}/api/mep`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          location: formData.location,
+          category,
+          area_of_work: formData.areaOfWork,
+          description: formData.description,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        }),
       });
 
-      if (error) throw error;
+      if (!res.ok) {
+        let message = "Failed to create request";
+        try {
+          const data = await res.json();
+          if (data && data.error) {
+            message = data.error;
+          }
+        } catch {
+          // ignore JSON parse errors, keep default message
+        }
+        toast.error(message);
+        return;
+      }
 
       toast.success("MEP Request created successfully!");
       navigate("/tickets");
@@ -106,14 +193,21 @@ export default function CreateMEP() {
       <Card>
         <CardHeader>
           <CardTitle>Create MEP Request</CardTitle>
-          <CardDescription>Submit a new maintenance, electrical, or plumbing request</CardDescription>
+          <CardDescription>
+            Submit a new maintenance, electrical, or plumbing request
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="location">Location *</Label>
-                <Select value={formData.location} onValueChange={(value) => setFormData({ ...formData, location: value })}>
+                <Select
+                  value={formData.location}
+                  onValueChange={(value) =>
+                    setFormData((prev) => ({ ...prev, location: value }))
+                  }
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select location" />
                   </SelectTrigger>
@@ -129,7 +223,12 @@ export default function CreateMEP() {
 
               <div className="space-y-2">
                 <Label htmlFor="category">Work Category *</Label>
-                <Select value={formData.category} onValueChange={(value) => setFormData({ ...formData, category: value })}>
+                <Select
+                  value={formData.category}
+                  onValueChange={(value) =>
+                    setFormData((prev) => ({ ...prev, category: value }))
+                  }
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
@@ -150,7 +249,12 @@ export default function CreateMEP() {
                 <Input
                   id="customCategory"
                   value={formData.customCategory}
-                  onChange={(e) => setFormData({ ...formData, customCategory: e.target.value })}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      customCategory: e.target.value,
+                    }))
+                  }
                   placeholder="Enter custom category"
                 />
               </div>
@@ -161,7 +265,12 @@ export default function CreateMEP() {
               <Input
                 id="areaOfWork"
                 value={formData.areaOfWork}
-                onChange={(e) => setFormData({ ...formData, areaOfWork: e.target.value })}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    areaOfWork: e.target.value,
+                  }))
+                }
                 placeholder="E.g., Main office building, 2nd floor"
               />
             </div>
@@ -171,17 +280,49 @@ export default function CreateMEP() {
               <Textarea
                 id="description"
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    description: e.target.value,
+                  }))
+                }
                 placeholder="Provide detailed description of the issue..."
                 rows={5}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="attachments">Attachments (optional)</Label>
+              <Input
+                id="attachments"
+                type="file"
+                multiple
+                onChange={handleAttachmentsChange}
+              />
+              <p className="text-xs text-muted-foreground">
+                You can upload up to {MAX_FILES} files, max 10 MB each (images,
+                PDFs, etc.). Files are stored securely with the request.
+              </p>
+              {attachments.length > 0 && (
+                <ul className="mt-1 text-xs text-muted-foreground list-disc list-inside">
+                  {attachments.map((att) => (
+                    <li key={att.name}>
+                      {att.name} ({Math.round(att.size / 1024)} KB)
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <div className="flex gap-4">
               <Button type="submit" disabled={loading} className="flex-1">
                 {loading ? "Creating..." : "Create Request"}
               </Button>
-              <Button type="button" variant="outline" onClick={() => navigate("/tickets")}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => navigate("/tickets")}
+              >
                 Cancel
               </Button>
             </div>
