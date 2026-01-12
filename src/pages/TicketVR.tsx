@@ -24,6 +24,9 @@ const API_BASE_URL = window.location.origin;
 const MAX_CHAT_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_CHAT_FILES = 5;
 
+// 👇 NEW: fixed transport assignee email
+const TRANSPORT_ASSIGNEE_EMAIL = "krishnaiah.donta@premierenergies.com";
+
 interface TicketVRType {
   ticket_number: string;
   creation_datetime: string;
@@ -87,14 +90,33 @@ export default function TicketVR() {
   const [driverNumber, setDriverNumber] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // 👇 normalize email once
+  const userEmailLower = (userEmail || "").toLowerCase();
+
   const isAssignee =
     !!ticket &&
-    !!userEmail &&
-    userEmail.toLowerCase() === ticket.assignee_email?.toLowerCase();
+    !!userEmailLower &&
+    userEmailLower === ticket.assignee_email?.toLowerCase();
+
   const isRequester =
     !!ticket &&
-    !!userEmail &&
-    userEmail.toLowerCase() === ticket.user_email?.toLowerCase();
+    !!userEmailLower &&
+    userEmailLower === ticket.user_email?.toLowerCase();
+
+  // 👇 NEW: only transport (Krishnaiah) should handle status/driver updates
+  const isTransportAssignee =
+    !!ticket &&
+    !!userEmailLower &&
+    userEmailLower === TRANSPORT_ASSIGNEE_EMAIL &&
+    userEmailLower === ticket.assignee_email?.toLowerCase();
+
+  // 👇 NEW: manager stage = assignee at pending_manager but NOT transport
+  const isManagerStageAssignee =
+    !!ticket &&
+    !!userEmailLower &&
+    ticket.status === "pending_manager" &&
+    userEmailLower === ticket.assignee_email?.toLowerCase() &&
+    userEmailLower !== TRANSPORT_ASSIGNEE_EMAIL;
 
   useEffect(() => {
     if (!ticketNumber) return;
@@ -529,7 +551,32 @@ export default function TicketVR() {
               </div>
             )}
 
-            {isAssignee && (
+            {/* 👇 NEW: manager approval UI for pending_manager stage */}
+            {isManagerStageAssignee && (
+              <div className="pt-4 border-t space-y-3">
+                <Label>Manager Approval</Label>
+                <p className="text-xs text-muted-foreground">
+                  Approve to forward this request to the transport team (
+                  {TRANSPORT_ASSIGNEE_EMAIL}). Reject if the request is not
+                  valid.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <Button onClick={() => handleStatusUpdate("pending")}>
+                    Approve &amp; Forward
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => handleStatusUpdate("rejected")}
+                  >
+                    Reject Request
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* 👇 UPDATED: only transport assignee sees status + driver inputs,
+                and never in pending_manager stage */}
+            {isTransportAssignee && ticket.status !== "pending_manager" && (
               <>
                 <div className="pt-4 border-t space-y-4">
                   <div>

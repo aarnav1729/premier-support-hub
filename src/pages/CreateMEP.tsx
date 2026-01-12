@@ -35,7 +35,7 @@ const LOCATIONS = [
   "Radiant-WH",
   "Bahadurguda-WH",
   // NOTE: spelling aligned with backend (getMEPAssigneeEmail) which uses "Kothu-WH"
-  "Kothu-WH",
+  "Kothur-WH",
 ];
 
 const CATEGORIES = [

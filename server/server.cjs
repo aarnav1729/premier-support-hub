@@ -26,6 +26,14 @@ const { ClientSecretCredential } = require("@azure/identity");
 // Express app
 const app = express();
 
+const ALLOWED_ORIGINS = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://10.0.50.16:22443",
+  "http://10.0.50.111:8080",
+  "https://spot.premierenergies.com", // keep / adjust as needed
+]);
+
 // Path to built frontend (adjust if your build lives elsewhere, e.g. "../client/dist")
 const CLIENT_BUILD_DIR =
   process.env.CLIENT_BUILD_DIR || path.join(__dirname, "..", "dist");
@@ -40,12 +48,31 @@ const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret_in_prod";
 const PORT = Number(process.env.PORT) || 22443;
 
 // --- CORS & middlewares ---
-app.use(
-  cors({
-    origin: true, // reflect request origin
-    credentials: true, // allow cookies
-  })
-);
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    );
+    res.header(
+      "Access-Control-Allow-Headers",
+      req.header("Access-Control-Request-Headers") ||
+        "Content-Type, Authorization, X-Requested-With"
+    );
+  }
+
+  // Handle preflight
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 
 app.use(express.json({ limit: "50mb", strict: true }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -54,9 +81,9 @@ app.use(compression());
 
 // --- MSSQL config (DB name changed to 'admin') ---
 const mssqlConfig = {
-  user: process.env.MSSQL_USER || "SPOT_USER",
-  password: process.env.MSSQL_PASSWORD || "Marvik#72@",
-  server: process.env.MSSQL_SERVER || "10.0.40.10",
+  user: process.env.MSSQL_USER || "PEL_DB",
+  password: process.env.MSSQL_PASSWORD || "Pel@0184",
+  server: process.env.MSSQL_SERVER || "10.0.50.17",
   port: Number(process.env.MSSQL_PORT) || 1433,
   database: process.env.MSSQL_DB || "admin",
   options: {
@@ -341,7 +368,9 @@ function keyvalTable(rows) {
       const zebra = i % 2 ? "background:#fafbff" : "";
       return `<tr style="${zebra}">
         <td style="padding:10px 12px;border-bottom:1px solid #eef1f6;width:210px;font-weight:600">${k}</td>
-        <td style="padding:10px 12px;border-bottom:1px solid #eef1f6">${v ?? "—"}</td>
+        <td style="padding:10px 12px;border-bottom:1px solid #eef1f6">${
+          v ?? "—"
+        }</td>
       </tr>`;
     })
     .join("");
@@ -357,8 +386,7 @@ function attachmentsList(origin, atts = []) {
       const href = a.url?.startsWith("http")
         ? a.url
         : `${origin}${a.url || ""}`;
-      const sizeKB =
-        a.size != null ? `, ${Math.round(a.size / 1024)} KB` : "";
+      const sizeKB = a.size != null ? `, ${Math.round(a.size / 1024)} KB` : "";
       return `<li style="margin:6px 0;">
         <a href="${href}" style="color:#0b5fff;text-decoration:none;">${
         a.name || "Attachment"
@@ -384,7 +412,6 @@ function formatUtc(dateLike) {
   return d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 
-
 function requireHod(req, res, next) {
   const email =
     (req.user && req.user.email && req.user.email.toLowerCase()) || "";
@@ -402,7 +429,7 @@ function getMEPAssigneeEmail(location) {
     "Bhagwati-WH",
     "Axonify-WH",
     "Bahadurguda-WH",
-    "Kothu-WH", // make sure FE uses the same spelling
+    "Kothur-WH", // make sure FE uses the same spelling
   ]);
   if (pepplLocations.has(location)) {
     return "mep.peppl@premierenergies.com";
@@ -512,13 +539,19 @@ app.post(
         const origin = `${req.protocol}://${req.get("host")}`;
         const otpTable = keyvalTable([
           ["Email", email],
-          ["One-Time Password", `<span style="font-size:20px;font-weight:700;">${otp}</span>`],
+          [
+            "One-Time Password",
+            `<span style="font-size:20px;font-weight:700;">${otp}</span>`,
+          ],
           ["Valid For", "5 minutes"],
           [
             "Requested At (UTC)",
             new Date().toISOString().replace("T", " ").slice(0, 19),
           ],
-          ["Login Portal", `<a href="${origin}" style="color:#0b5fff;text-decoration:none;">${origin}</a>`],
+          [
+            "Login Portal",
+            `<a href="${origin}" style="color:#0b5fff;text-decoration:none;">${origin}</a>`,
+          ],
         ]);
 
         const bodyHtml = `
@@ -540,7 +573,10 @@ app.post(
           console.warn("[mail] OTP email failed:", err?.message || err);
         });
       } catch (mailErr) {
-        console.warn("[mail] OTP email build/send failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] OTP email build/send failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       // Keep current behavior (OTP in response) for now
@@ -548,7 +584,8 @@ app.post(
         success: true,
         email,
         otp,
-        message: "OTP generated and emailed. For production, remove OTP from API response.",
+        message:
+          "OTP generated and emailed. For production, remove OTP from API response.",
       });
     } catch (err) {
       console.error("request-otp error:", err);
@@ -718,7 +755,12 @@ app.post(
 
       const insertReq = pool.request();
       insertReq.input("ticket_number", sql.NVarChar(50), ticketNumber);
-      insertReq.input("empid", sql.Int, emp ? emp.empid : null);
+      
+      // empid now supports alphanumerics like "PEPPL0001"
+      const empIdValue =
+        emp && emp.empid != null ? String(emp.empid).trim() : null;
+      insertReq.input("empid", sql.NVarChar(50), empIdValue);
+      
       insertReq.input("empemail", sql.NVarChar(255), userEmail);
       insertReq.input("dept", sql.NVarChar(100), emp ? emp.dept : null);
       insertReq.input("subdept", sql.NVarChar(100), emp ? emp.subdept : null);
@@ -732,6 +774,7 @@ app.post(
         sql.NVarChar(100),
         emp ? emp.designation : null
       );
+      
       insertReq.input("hod", sql.NVarChar(255), hodValue);
       insertReq.input("location", sql.NVarChar(100), location);
       insertReq.input("category", sql.NVarChar(100), category);
@@ -810,7 +853,10 @@ app.post(
           `SPOT: MEP Ticket Created (${created.ticket_number})`,
           htmlRequester
         ).catch((err) =>
-          console.warn("[mail] MEP create (requester) failed:", err?.message || err)
+          console.warn(
+            "[mail] MEP create (requester) failed:",
+            err?.message || err
+          )
         );
 
         // To assignee
@@ -831,14 +877,19 @@ app.post(
           htmlAssignee,
           [created.empemail]
         ).catch((err) =>
-          console.warn("[mail] MEP create (assignee) failed:", err?.message || err)
+          console.warn(
+            "[mail] MEP create (assignee) failed:",
+            err?.message || err
+          )
         );
       } catch (mailErr) {
-        console.warn("[mail] MEP create email block failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] MEP create email block failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       return res.status(201).json(created);
-
     } catch (err) {
       console.error("POST /api/mep error:", err);
       return res.status(500).json({ error: "Failed to create MEP ticket" });
@@ -1044,11 +1095,13 @@ app.patch(
           console.warn("[mail] MEP status email failed:", err?.message || err)
         );
       } catch (mailErr) {
-        console.warn("[mail] MEP status email block failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] MEP status email block failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       return res.json(updated);
-
     } catch (err) {
       console.error("PATCH /api/mep/:ticketNumber/status error:", err);
       return res.status(500).json({ error: "Failed to update MEP status" });
@@ -1318,7 +1371,10 @@ app.post(
           `SPOT: VR Ticket Created (${created.ticket_number})`,
           htmlRequester
         ).catch((err) =>
-          console.warn("[mail] VR create (requester) failed:", err?.message || err)
+          console.warn(
+            "[mail] VR create (requester) failed:",
+            err?.message || err
+          )
         );
 
         // To initial assignee (manager or transport)
@@ -1339,10 +1395,16 @@ app.post(
           htmlAssignee,
           [created.user_email]
         ).catch((err) =>
-          console.warn("[mail] VR create (assignee) failed:", err?.message || err)
+          console.warn(
+            "[mail] VR create (assignee) failed:",
+            err?.message || err
+          )
         );
       } catch (mailErr) {
-        console.warn("[mail] VR create email block failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] VR create email block failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       // Parse names JSON before sending back
@@ -1355,7 +1417,6 @@ app.post(
       }
 
       return res.status(201).json(created);
-
     } catch (err) {
       console.error("POST /api/vr error:", err);
       return res.status(500).json({ error: "Failed to create VR ticket" });
@@ -1556,47 +1617,47 @@ app.patch(
   WHERE ticket_number = @ticket_number;
 `);
 
-const updated = updateRes.recordset[0];
+      const updated = updateRes.recordset[0];
 
-await addHistoryEntry({
-  ticketNumber,
-  userEmail,
-  actionType: "UPDATE_VR_STATUS",
-  comment: `Status changed to ${newStatus}`,
-  beforeState: { status: existing.status },
-  afterState: { status: updated.status },
-});
+      await addHistoryEntry({
+        ticketNumber,
+        userEmail,
+        actionType: "UPDATE_VR_STATUS",
+        comment: `Status changed to ${newStatus}`,
+        beforeState: { status: existing.status },
+        afterState: { status: updated.status },
+      });
 
-// --- Email notification for VR status update / approvals ---
-try {
-  const origin = `${req.protocol}://${req.get("host")}`;
-  let namesParsed = updated.names;
-  if (namesParsed) {
-    try {
-      namesParsed = JSON.parse(namesParsed);
-    } catch {
-      // ignore
-    }
-  }
-  const ticketForEmail = { ...updated, names: namesParsed };
-  const detailsTable = buildVrDetailsTable(ticketForEmail);
+      // --- Email notification for VR status update / approvals ---
+      try {
+        const origin = `${req.protocol}://${req.get("host")}`;
+        let namesParsed = updated.names;
+        if (namesParsed) {
+          try {
+            namesParsed = JSON.parse(namesParsed);
+          } catch {
+            // ignore
+          }
+        }
+        const ticketForEmail = { ...updated, names: namesParsed };
+        const detailsTable = buildVrDetailsTable(ticketForEmail);
 
-  const statusTable = keyvalTable([
-    ["Ticket #", updated.ticket_number],
-    ["Previous Status", existing.status],
-    ["New Status", updated.status],
-    ["Changed By", userEmail],
-    ["Changed At (UTC)", formatUtc(new Date())],
-  ]);
+        const statusTable = keyvalTable([
+          ["Ticket #", updated.ticket_number],
+          ["Previous Status", existing.status],
+          ["New Status", updated.status],
+          ["Changed By", userEmail],
+          ["Changed At (UTC)", formatUtc(new Date())],
+        ]);
 
-  let title = "🔁 SPOT: VR Ticket Status Updated";
-  let subject = `SPOT: VR Status Updated (${updated.ticket_number})`;
-  if (isManagerApproval) {
-    title = "✅ SPOT: VR Request Approved by Manager";
-    subject = `SPOT: VR Manager Approval (${updated.ticket_number})`;
-  }
+        let title = "🔁 SPOT: VR Ticket Status Updated";
+        let subject = `SPOT: VR Status Updated (${updated.ticket_number})`;
+        if (isManagerApproval) {
+          title = "✅ SPOT: VR Request Approved by Manager";
+          subject = `SPOT: VR Manager Approval (${updated.ticket_number})`;
+        }
 
-  const bodyHtml = `
+        const bodyHtml = `
     <p>Hello,</p>
     <p>The status of your <b>Vehicle Request</b> has been updated in <b>SPOT</b>.</p>
     ${statusTable}
@@ -1604,32 +1665,34 @@ try {
     ${detailsTable}
   `;
 
-  const html = emailShell({
-    title,
-    bodyHtml,
-    ctaHtml: `<a href="${origin}" style="text-decoration:none;padding:10px 16px;border-radius:6px;border:1px solid #0b5fff;color:#0b5fff;font-weight:600;">View Request</a>`,
-  });
+        const html = emailShell({
+          title,
+          bodyHtml,
+          ctaHtml: `<a href="${origin}" style="text-decoration:none;padding:10px 16px;border-radius:6px;border:1px solid #0b5fff;color:#0b5fff;font-weight:600;">View Request</a>`,
+        });
 
-  const recipients = [updated.user_email, updated.assignee_email].filter(
-    Boolean
-  );
-  sendEmail(recipients, subject, html).catch((err) =>
-    console.warn("[mail] VR status email failed:", err?.message || err)
-  );
-} catch (mailErr) {
-  console.warn("[mail] VR status email block failed:", mailErr?.message || mailErr);
-}
+        const recipients = [updated.user_email, updated.assignee_email].filter(
+          Boolean
+        );
+        sendEmail(recipients, subject, html).catch((err) =>
+          console.warn("[mail] VR status email failed:", err?.message || err)
+        );
+      } catch (mailErr) {
+        console.warn(
+          "[mail] VR status email block failed:",
+          mailErr?.message || mailErr
+        );
+      }
 
-if (updated.names) {
-  try {
-    updated.names = JSON.parse(updated.names);
-  } catch {
-    // ignore
-  }
-}
+      if (updated.names) {
+        try {
+          updated.names = JSON.parse(updated.names);
+        } catch {
+          // ignore
+        }
+      }
 
-return res.json(updated);
-
+      return res.json(updated);
     } catch (err) {
       console.error("PATCH /api/vr/:ticketNumber/status error:", err);
       return res.status(500).json({ error: "Failed to update VR status" });
@@ -1736,7 +1799,10 @@ app.patch(
           console.warn("[mail] VR driver email failed:", err?.message || err)
         );
       } catch (mailErr) {
-        console.warn("[mail] VR driver email block failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] VR driver email block failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       if (updated.names) {
@@ -1748,7 +1814,6 @@ app.patch(
       }
 
       return res.json(updated);
-
     } catch (err) {
       console.error("PATCH /api/vr/:ticketNumber/driver error:", err);
       return res.status(500).json({ error: "Failed to update driver details" });
@@ -2042,20 +2107,22 @@ app.post(
             ctaHtml: `<a href="${origin}" style="text-decoration:none;padding:10px 16px;border-radius:6px;border:1px solid #0b5fff;color:#0b5fff;font-weight:600;">Open Conversation</a>`,
           });
 
-          sendEmail(
-            notify,
-            `SPOT: New Message on ${ticketNumber}`,
-            html
-          ).catch((err) =>
-            console.warn("[mail] chat message email failed:", err?.message || err)
+          sendEmail(notify, `SPOT: New Message on ${ticketNumber}`, html).catch(
+            (err) =>
+              console.warn(
+                "[mail] chat message email failed:",
+                err?.message || err
+              )
           );
         }
       } catch (mailErr) {
-        console.warn("[mail] chat email block failed:", mailErr?.message || mailErr);
+        console.warn(
+          "[mail] chat email block failed:",
+          mailErr?.message || mailErr
+        );
       }
 
       return res.status(201).json(created);
-
     } catch (err) {
       console.error("POST /api/chat/:ticketNumber error:", err);
       return res.status(500).json({ error: "Failed to send chat message" });
